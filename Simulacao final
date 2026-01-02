@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Simulador de Consumo de Energia</title>
+  <style>
+    :root{--bg:#0f172a;--card:#111827;--fg:#e5e7eb;--accent:#22d3ee;--warn:#f59e0b;--danger:#ef4444;}
+    *{box-sizing:border-box}
+    body{margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu; background:linear-gradient(180deg,#0b1023,#0f172a);}
+    .wrap{max-width:980px;margin:32px auto;padding:0 16px;color:var(--fg)}
+    h1{margin:0 0 16px;font-size:28px}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .card{background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.08); border-radius:16px;padding:16px}
+    .label{opacity:.85;font-size:12px;letter-spacing:.3px;text-transform:uppercase}
+    .value{font-size:28px;font-weight:700}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    input[type="number"]{padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:var(--fg);width:160px}
+    button{border:0;border-radius:12px;padding:10px 14px;font-weight:600;color:#0b1023;background:var(--accent);cursor:pointer}
+    button.secondary{background:#334155;color:var(--fg)}
+    .muted{opacity:.75}
+    .progress{height:14px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;border:1px solid rgba(255,255,255,.1)}
+    .bar{height:100%;width:0%;background:linear-gradient(90deg,#22d3ee,#60a5fa)}
+    .log{max-height:160px;overflow:auto;font-family:ui-monospace,Menlo,Consolas;background:rgba(0,0,0,.35);padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,.08)}
+    .pill{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}
+    .pill.warn{background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.35)}
+    .pill.danger{background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.35)}
+    a{color:var(--fg)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Simulador de Consumo de Energia</h1>
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">Tensão</div>
+        <div class="value"><span id="tensao">0</span> <span class="muted">V</span></div>
+      </div>
+      <div class="card">
+        <div class="label">Corrente</div>
+        <div class="value"><span id="corrente">0</span> <span class="muted">A</span></div>
+      </div>
+      <div class="card">
+        <div class="label">Potência</div>
+        <div class="value"><span id="potencia">0</span> <span class="muted">kW</span></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="row" style="justify-content:space-between;gap:16px">
+        <div class="row">
+          <label class="label" for="limiteEnergia" style="margin-right:8px">Energia disponível (kWh)</label>
+          <input type="number" id="limiteEnergia" placeholder="Ex: 10" min="0" step="0.1">
+          <button id="btnDefinir">Submeter</button>
+        </div>
+        <div class="row">
+          <button id="btnIniciar">Iniciar simulação</button>
+          <button class="secondary" id="btnParar">Parar</button>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:14px;gap:24px">
+        <div><span class="label">Consumo acumulado</span><div class="value" id="consumoAcumulado">0.000 <span class="muted">kWh</span></div></div>
+        <div><span class="label">Limite atual</span><div class="value" id="limiteAtual">0.000 <span class="muted">kWh</span></div></div>
+        <div><span class="label">Status</span><div id="status" class="pill">Aguardando</div></div>
+      </div>
+
+      <div class="progress" style="margin-top:10px">
+        <div id="bar" class="bar"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="label" style="margin-bottom:8px">Notificações</div>
+      <div id="notifs" class="log"></div>
+    </div>
+
+    <p class="muted" style="margin-top:10px">
+      * Esta página simula a recepção de dados como se viessem por WebSocket, gerando leituras a cada 1s.
+    </p>
+  </div>
+
+  <script>
+    // ------------------------
+    // estado do simulador
+    // ------------------------
+    let consumoAcumulado = 0; // kWh
+    let limiteEnergia = 0;    // kWh (definido pelo usuário)
+    let aviso75 = false;
+    let ultimaLeituraMs = null;
+    let timer = null;
+
+    const elTensao = document.getElementById('tensao');
+    const elCorrente = document.getElementById('corrente');
+    const elPotencia = document.getElementById('potencia');
+    const elConsumo = document.getElementById('consumoAcumulado');
+    const elLimite = document.getElementById('limiteAtual');
+    const elBar = document.getElementById('bar');
+    const elStatus = document.getElementById('status');
+    const log = document.getElementById('notifs');
+
+    // ------------------------
+    // UI helpers
+    // ------------------------
+    function setStatus(text, kind){
+      elStatus.textContent = text;
+      elStatus.className = 'pill ' + (kind || '');
+    }
+    function logMsg(msg){
+      const t = new Date().toLocaleTimeString();
+      log.innerHTML = `[${t}] ${msg}<br>` + log.innerHTML;
+    }
+    function format(n){ return Number(n).toFixed(3); }
+
+    // ------------------------
+    // definição de limite pelo usuário
+    // ------------------------
+    document.getElementById('btnDefinir').addEventListener('click', () => {
+      const v = parseFloat(document.getElementById('limiteEnergia').value);
+      if (isNaN(v) || v <= 0){
+        alert('Digite um valor válido (kWh) maior que zero.');
+        return;
+      }
+      limiteEnergia = v;
+      consumoAcumulado = 0;
+      aviso75 = false;
+      ultimaLeituraMs = null;
+      elConsumo.innerHTML = `${format(consumoAcumulado)} <span class="muted">kWh</span>`;
+      elLimite.innerHTML = `${format(limiteEnergia)} <span class="muted">kWh</span>`;
+      elBar.style.width = '0%';
+      setStatus('Limite definido', '');
+      logMsg(`Limite definido para ${format(limiteEnergia)} kWh.`);
+    });
+
+    // ------------------------
+    // simulação de "recepção" de dados
+    // gera JSON como o do seu sistema: {HUM: V, TEMP: A, POT: kW}
+    // ------------------------
+    function gerarLeitura(){
+      // tensão oscilando ao redor de 220V
+      const V = 220 + (Math.sin(Date.now()/1500) * 10) + (Math.random()*2-1);
+      // corrente entre 0 e ~9A com variação
+      const I = Math.abs(7 + (Math.sin(Date.now()/900) * 3) + (Math.random()*1.2-0.6));
+      // potência ativa aproximada (kW)
+      const kW = (V * I) / 1000;
+
+      const pacote = { HUM: V.toFixed(1), TEMP: I.toFixed(2), POT: kW.toFixed(3) };
+      onMensagemRecebida(JSON.stringify(pacote));
+    }
+
+    // "handler" como se fosse websock.onmessage
+    function onMensagemRecebida(evtData){
+      const JSONobj = JSON.parse(evtData);
+      // atualiza mostradores
+      elTensao.textContent = JSONobj.HUM;
+      elCorrente.textContent = JSONobj.TEMP;
+      elPotencia.textContent = JSONobj.POT;
+
+      // acumula consumo
+      const agora = Date.now();
+      if (ultimaLeituraMs === null) {
+        ultimaLeituraMs = agora;
+        return; // primeira amostra define referência temporal
+      }
+      const deltaH = (agora - ultimaLeituraMs) / 3600000; // ms -> horas
+      ultimaLeituraMs = agora;
+
+      const potenciaKW = parseFloat(JSONobj.POT); // já em kW
+      consumoAcumulado += potenciaKW * deltaH;    // kWh = kW × h
+      elConsumo.innerHTML = `${format(consumoAcumulado)} <span class="muted">kWh</span>`;
+
+      // progresso relativo ao limite (se houver)
+      if (limiteEnergia > 0) {
+        const pct = Math.min(100, (consumoAcumulado/limiteEnergia)*100);
+        elBar.style.width = pct + '%';
+
+        if (!aviso75 && consumoAcumulado >= 0.75 * limiteEnergia) {
+          aviso75 = true;
+          setStatus('Atenção: 75% usados', 'warn');
+          alert('⚠️ Sua energia está acabando! Restam apenas 25% do valor disponível. Recarregue.');
+          logMsg('Aviso: consumo atingiu 75% do limite.');
+        }
+
+        if (consumoAcumulado >= limiteEnergia) {
+          // corte/limpeza: zera tudo na página
+          alert('⚡ Limite de energia atingido! Dados serão resetados.');
+          logMsg('Limite atingido: dados resetados e energia “cortada” na simulação.');
+
+          consumoAcumulado = 0;
+          limiteEnergia = 0;
+          aviso75 = false;
+          ultimaLeituraMs = null;
+
+          // limpar UI
+          document.getElementById('limiteEnergia').value = '';
+          elConsumo.innerHTML = `0.000 <span class="muted">kWh</span>`;
+          elLimite.innerHTML   = `0.000 <span class="muted">kWh</span>`;
+          elBar.style.width = '0%';
+          elTensao.textContent = '0';
+          elCorrente.textContent = '0';
+          elPotencia.textContent = '0';
+          setStatus('Energia cortada (simulação)', 'danger');
+        }
+      }
+    }
+
+    // ------------------------
+    // controles de simulação (start/stop)
+    // ------------------------
+    document.getElementById('btnIniciar').addEventListener('click', () => {
+      if (timer) return;
+      timer = setInterval(gerarLeitura, 1000); // “tick” de 1s
+      setStatus('Recebendo dados…', '');
+      logMsg('Simulação iniciada (amostras a cada 1s).');
+    });
+
+    document.getElementById('btnParar').addEventListener('click', () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+        setStatus('Parado', '');
+        logMsg('Simulação parada.');
+      }
+    });
+  </script>
+</body>
+</html>
